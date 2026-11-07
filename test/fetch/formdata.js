@@ -384,6 +384,62 @@ test('.formData() with multipart/form-data body that ends with --\r\n', async (t
   await request.formData()
 })
 
+// https://github.com/nodejs/undici/pull/6112
+test('a part may contain the boundary text when it is not at the start of a line', async (t) => {
+  const boundary = '----formdata-undici-0.1234567890123456'
+  const body =
+    '--' + boundary + '\r\n' +
+    'Content-Disposition: form-data; name="a"\r\n' +
+    '\r\n' +
+    `text with ${boundary} inside\r\n` +
+    '--' + boundary + '\r\n' +
+    'Content-Disposition: form-data; name="b"\r\n' +
+    '\r\n' +
+    `text with --${boundary} inside\r\n` +
+    '--' + boundary + '\r\n' +
+    'Content-Disposition: form-data; name="c"\r\n' +
+    '\r\n' +
+    'after real boundary\r\n' +
+    '--' + boundary + '--\r\n'
+
+  const request = new Request('http://localhost', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'multipart/form-data; boundary=' + boundary
+    },
+    body
+  })
+
+  const formData = await request.formData()
+
+  t.assert.strictEqual(formData.get('a'), `text with ${boundary} inside`)
+  t.assert.strictEqual(formData.get('b'), `text with --${boundary} inside`)
+  t.assert.strictEqual(formData.get('c'), 'after real boundary')
+})
+
+test('.formData() throws when no boundary delimiter terminates the body', async (t) => {
+  const boundary = '----formdata-undici-0.9999999999999999'
+  const body =
+    '--' + boundary + '\r\n' +
+    'Content-Disposition: form-data; name="a"\r\n' +
+    '\r\n' +
+    'value without terminator'
+
+  const request = new Request('http://localhost', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'multipart/form-data; boundary=' + boundary
+    },
+    body
+  })
+
+  await t.assert.rejects(request.formData(), (err) => {
+    t.assert.strictEqual(err instanceof TypeError, true)
+    t.assert.strictEqual(err.cause?.message, 'expected boundary after body')
+    return true
+  })
+})
+
 test('.formData() rejects malformed multipart header line ending with bare CR', async (t) => {
   const boundary = '----formdata-undici-bare-cr-0000000000'
   const body = Buffer.concat([
