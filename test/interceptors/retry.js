@@ -995,6 +995,87 @@ test('should reject the original response body when a retry returns a non-retrya
   t.strictEqual(count, 2)
 })
 
+test('resume: false disables mid-body retry after response headers arrive', async t => {
+  let requests = 0
+  const server = createServer({ joinDuplicateHeaders: true }, (_req, res) => {
+    requests++
+    res.writeHead(200, { 'content-length': 10, etag: '"v1"' })
+    res.write('abc')
+    setTimeout(() => res.destroy(), 10)
+  })
+  server.listen(0)
+  await once(server, 'listening')
+
+  const client = new Client(`http://localhost:${server.address().port}`)
+    .compose(retry({ minTimeout: 1, timeoutFactor: 1, resume: false }))
+  t.after(async () => {
+    await client.close()
+    server.close()
+  })
+
+  const response = await client.request({ method: 'GET', path: '/' })
+  assert.strictEqual(response.statusCode, 200)
+  await assert.rejects(response.body.text())
+  assert.strictEqual(requests, 1)
+})
+
+test('resume: false still retries a connection error before response headers', async t => {
+  let requests = 0
+  const server = createServer({ joinDuplicateHeaders: true }, (_req, res) => {
+    requests++
+    if (requests === 1) {
+      res.socket.destroy()
+      return
+    }
+    res.writeHead(200, { 'content-length': 2 })
+    res.end('ok')
+  })
+  server.listen(0)
+  await once(server, 'listening')
+
+  const client = new Client(`http://localhost:${server.address().port}`)
+    .compose(retry({ minTimeout: 1, timeoutFactor: 1, resume: false }))
+  t.after(async () => {
+    await client.close()
+    server.close()
+  })
+
+  const response = await client.request({ method: 'GET', path: '/' })
+  assert.strictEqual(response.statusCode, 200)
+  assert.strictEqual(await response.body.text(), 'ok')
+  assert.strictEqual(requests, 2)
+})
+
+test('resume: true still retries mid-body errors after headers with a Range header', async t => {
+  const body = 'abcdefghij'
+  const requests = []
+  const server = createServer({ joinDuplicateHeaders: true }, (req, res) => {
+    requests.push(req)
+    if (requests.length === 1) {
+      res.writeHead(200, { 'content-length': body.length, etag: '"v1"' })
+      res.write(body.slice(0, 4))
+      setTimeout(() => res.destroy(), 10)
+    } else {
+      res.writeHead(206, { 'content-range': `bytes 4-9/${body.length}`, 'content-length': 6, etag: '"v1"' })
+      res.end(body.slice(4))
+    }
+  })
+  server.listen(0)
+  await once(server, 'listening')
+
+  const client = new Client(`http://localhost:${server.address().port}`)
+    .compose(retry({ minTimeout: 1, timeoutFactor: 1, resume: true }))
+  t.after(async () => {
+    await client.close()
+    server.close()
+  })
+
+  const response = await client.request({ method: 'GET', path: '/' })
+  assert.strictEqual(await response.body.text(), body)
+  assert.strictEqual(requests.length, 2)
+  assert.strictEqual(requests[1].headers.range, 'bytes=4-9')
+})
+
 test('#3975 - keep event loop ticking', async t => {
   const suite = tspl(t, { plan: 2 })
 
