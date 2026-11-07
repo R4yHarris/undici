@@ -635,6 +635,64 @@ for (const statusCode of [204, 304]) {
   })
 }
 
+test('response 200 with Content-Length followed by trailing whitespace is accepted', async (t) => {
+  const server = createRawServer(t, (socket) => {
+    socket.once('data', () => {
+      // RFC 9112 §5: field-line = field-name ":" OWS field-value OWS
+      socket.write('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5         \r\n\r\nhello')
+    })
+  })
+  server.listen(0)
+  await once(server, 'listening')
+
+  const client = new Client(`http://localhost:${server.address().port}`)
+  t.after(() => client.destroy())
+
+  const disconnectCodes = []
+  client.on('disconnect', (origin, targets, err) => { disconnectCodes.push(err.code) })
+
+  const { statusCode, body } = await client.request({ path: '/', method: 'GET' })
+  assert.strictEqual(statusCode, 200)
+  assert.strictEqual(await body.text(), 'hello')
+  assert.ok(
+    !disconnectCodes.includes('UND_ERR_RES_CONTENT_LENGTH_MISMATCH'),
+    `unexpected UND_ERR_RES_CONTENT_LENGTH_MISMATCH: ${disconnectCodes.join(',')}`
+  )
+})
+
+test('response 200 with a plain Content-Length still parses', async (t) => {
+  const server = createRawServer(t, (socket) => {
+    socket.once('data', () => {
+      socket.end('HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello')
+    })
+  })
+  server.listen(0)
+  await once(server, 'listening')
+
+  const client = new Client(`http://localhost:${server.address().port}`)
+  t.after(() => client.destroy())
+
+  const { statusCode, body } = await client.request({ path: '/', method: 'GET' })
+  assert.strictEqual(statusCode, 200)
+  assert.strictEqual(await body.text(), 'hello')
+})
+
+test('response 200 with trailing whitespace and a short body still errors', async (t) => {
+  const server = createRawServer(t, (socket) => {
+    socket.once('data', () => {
+      socket.end('HTTP/1.1 200 OK\r\nContent-Length: 5   \r\nconnection: close\r\n\r\nhel')
+    })
+  })
+  server.listen(0)
+  await once(server, 'listening')
+
+  const client = new Client(`http://localhost:${server.address().port}`)
+  t.after(() => client.destroy())
+
+  const result = await dispatchPaused(client)
+  assert.strictEqual(result.error?.code, 'UND_ERR_RES_CONTENT_LENGTH_MISMATCH')
+})
+
 test('response 200 with short body still errors when the connection closes while paused', async (t) => {
   const server = createRawServer(t, (socket) => {
     socket.once('data', () => {
