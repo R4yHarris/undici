@@ -487,6 +487,42 @@ test('Cookie Set', () => {
   assert.equal(headers.get('Set-Cookie'), null)
 })
 
+test('setCookie ignores finite numeric expires outside the Date range', () => {
+  const outOfRange = [2 ** 64, -(2 ** 64), Number.MAX_VALUE, -Number.MAX_VALUE]
+
+  for (const expires of outOfRange) {
+    const headers = new Headers()
+    setCookie(headers, { name: 'session', value: 'value', expires })
+    assert.strictEqual(headers.get('set-cookie'), 'session=value')
+  }
+
+  // Zero is a valid in-range epoch and is still serialized.
+  let headers = new Headers()
+  setCookie(headers, { name: 'session', value: 'value', expires: 0 })
+  assert.strictEqual(
+    headers.get('set-cookie'),
+    'session=value; Expires=Thu, 01 Jan 1970 00:00:00 GMT'
+  )
+
+  // An in-range numeric expires still converts to the matching Date.
+  headers = new Headers()
+  setCookie(headers, { name: 'session', value: 'value', expires: 1000 })
+  assert.strictEqual(
+    headers.get('set-cookie'),
+    'session=value; Expires=Thu, 01 Jan 1970 00:00:01 GMT'
+  )
+
+  // Non-finite numeric expires keep the unsigned long long conversion (0).
+  for (const expires of [NaN, Infinity, -Infinity]) {
+    headers = new Headers()
+    setCookie(headers, { name: 'session', value: 'value', expires })
+    assert.strictEqual(
+      headers.get('set-cookie'),
+      'session=value; Expires=Thu, 01 Jan 1970 00:00:00 GMT'
+    )
+  }
+})
+
 test('Set-Cookie parser', () => {
   let headers = new Headers({ 'set-cookie': 'Space=Cat' })
   assert.deepEqual(getSetCookies(headers), [{
